@@ -317,6 +317,8 @@ conn *conn_new(const int sfd, enum conn_states init_state,
             fprintf(stderr, "calloc()\n");
             return NULL;
         }
+        MEMCACHED_CONN_CREATE(c);
+
         c->rbuf = c->wbuf = 0;
         c->ilist = 0;
         c->suffixlist = 0;
@@ -341,13 +343,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
 
         if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
                 c->msglist == 0 || c->suffixlist == 0) {
-            if (c->rbuf != 0) free(c->rbuf);
-            if (c->wbuf != 0) free(c->wbuf);
-            if (c->ilist != 0) free(c->ilist);
-            if (c->suffixlist != 0) free(c->suffixlist);
-            if (c->iov != 0) free(c->iov);
-            if (c->msglist != 0) free(c->msglist);
-            free(c);
+            conn_free(c);
             fprintf(stderr, "malloc()\n");
             return NULL;
         }
@@ -424,6 +420,8 @@ conn *conn_new(const int sfd, enum conn_states init_state,
     stats.total_conns++;
     STATS_UNLOCK();
 
+    MEMCACHED_CONN_ALLOCATE(c->sfd);
+
     return c;
 }
 
@@ -460,6 +458,7 @@ static void conn_cleanup(conn *c) {
  */
 void conn_free(conn *c) {
     if (c) {
+        MEMCACHED_CONN_DESTROY(c);
         if (c->hdrbuf)
             free(c->hdrbuf);
         if (c->msglist)
@@ -487,6 +486,7 @@ static void conn_close(conn *c) {
     if (settings.verbose > 1)
         fprintf(stderr, "<%d connection closed.\n", c->sfd);
 
+    MEMCACHED_CONN_RELEASE(c->sfd);
     close(c->sfd);
     accept_new_conns(true);
     conn_cleanup(c);
@@ -595,6 +595,10 @@ static void conn_set_state(conn *c, enum conn_states state) {
         }
 
         c->state = state;
+
+        if (state == conn_write) {
+            MEMCACHED_PROCESS_COMMAND_END(c->sfd, c->wbuf, c->wbytes);
+        }
     }
 }
 
@@ -835,9 +839,32 @@ static void complete_nread_ascii(conn *c) {
         out_string(c, "CLIENT_ERROR bad data chunk");
     } else {
       ret = store_item(it, comm, c);
-      if (ret == 1)
+      if (ret == 1) {
           out_string(c, "STORED");
-      else if(ret == 2)
+#ifdef HAVE_DTRACE
+          switch (comm) {
+          case NREAD_ADD:
+              MEMCACHED_COMMAND_ADD(c->sfd, ITEM_key(it), it->nbytes);
+              break;
+          case NREAD_REPLACE:
+              MEMCACHED_COMMAND_REPLACE(c->sfd, ITEM_key(it), it->nbytes);
+              break;
+          case NREAD_APPEND:
+              MEMCACHED_COMMAND_APPEND(c->sfd, ITEM_key(it), it->nbytes);
+              break;
+          case NREAD_PREPEND:
+              MEMCACHED_COMMAND_PREPEND(c->sfd, ITEM_key(it), it->nbytes);
+              break;
+          case NREAD_SET:
+              MEMCACHED_COMMAND_SET(c->sfd, ITEM_key(it), it->nbytes);
+              break;
+          case NREAD_CAS:
+              MEMCACHED_COMMAND_CAS(c->sfd, ITEM_key(it), it->nbytes,
+                                    it->cas_id);
+              break;
+          }
+#endif
+      } else if(ret == 2)
           out_string(c, "EXISTS");
       else if(ret == 3)
           out_string(c, "NOT_FOUND");
@@ -1024,7 +1051,7 @@ static void complete_incr_bin(conn *c) {
         /* Weird magic in add_delta forces me to pad here */
         char tmpbuf[INCR_MAX_STORAGE_LEN];
         uint64_t l = 0;
-        add_delta(it, c->cmd == PROTOCOL_BINARY_CMD_INCREMENT,
+        add_delta(c, it, c->cmd == PROTOCOL_BINARY_CMD_INCREMENT,
                   req->message.body.delta, tmpbuf);
         rsp->message.body.value = swap64(strtoull(tmpbuf, NULL, 10));
         c->cas = it->cas_id;
@@ -1674,6 +1701,8 @@ int do_store_item(item *it, int comm, conn *c) {
 
                 if (new_it == NULL) {
                     /* SERVER_ERROR out of memory */
+                    if (old_it != NULL)
+                        do_item_remove(old_it);
                     return 0;
                 }
 
@@ -2140,7 +2169,10 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                     if (new_list) {
                         c->isize *= 2;
                         c->ilist = new_list;
-                    } else break;
+                    } else {
+                        item_remove(it);
+                        break;
+                    }
                 }
 
                 /*
@@ -2153,14 +2185,19 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
 
                 if (return_cas)
                 {
+                  MEMCACHED_COMMAND_GETS(c->sfd, ITEM_key(it), it->nbytes,
+                                         it->cas_id);
                   /* Goofy mid-flight realloc. */
                   if (i >= c->suffixsize) {
                     char **new_suffix_list = realloc(c->suffixlist,
                                            sizeof(char *) * c->suffixsize * 2);
                     if (new_suffix_list) {
-                      c->suffixsize *= 2;
-                      c->suffixlist  = new_suffix_list;
-                    } else break;
+                        c->suffixsize *= 2;
+                        c->suffixlist  = new_suffix_list;
+                    } else {
+                        item_remove(it); 
+                        break;
+                    }
                   }
 
                   suffix = suffix_from_freelist();
@@ -2171,6 +2208,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                     stats.get_misses += stats_get_misses;
                     STATS_UNLOCK();
                     out_string(c, "SERVER_ERROR out of memory making CAS suffix");
+                    item_remove(it);
                     return;
                   }
                   *(c->suffixlist + i) = suffix;
@@ -2181,15 +2219,18 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                       add_iov(c, suffix, strlen(suffix)) != 0 ||
                       add_iov(c, ITEM_data(it), it->nbytes) != 0)
                       {
+                          item_remove(it); 
                           break;
                       }
                 }
                 else
                 {
+                  MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nbytes);
                   if (add_iov(c, "VALUE ", 6) != 0 ||
                       add_iov(c, ITEM_key(it), it->nkey) != 0 ||
                       add_iov(c, ITEM_suffix(it), it->nsuffix + it->nbytes) != 0)
                       {
+                          item_remove(it);
                           break;
                       }
                 }
@@ -2206,6 +2247,11 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
 
             } else {
                 stats_get_misses++;
+                if (return_cas) {
+                    MEMCACHED_COMMAND_GETS(c->sfd, key, -1, 0);
+                } else {
+                    MEMCACHED_COMMAND_GET(c->sfd, key, -1);
+                }
             }
 
             key_token++;
@@ -2285,7 +2331,8 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
       req_cas_id = strtoull(tokens[5].value, NULL, 10);
     }
 
-    if(errno == ERANGE || ((flags == 0 || exptime == 0) && errno == EINVAL)) {
+    if(errno == ERANGE || ((flags == 0 || exptime == 0) && errno == EINVAL)
+       || vlen < 0) {
         out_string(c, "CLIENT_ERROR bad command line format");
         return;
     }
@@ -2317,6 +2364,16 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         /* swallow the data line */
         c->write_and_go = conn_swallow;
         c->sbytes = vlen + 2;
+
+        /* Avoid stale data persisting in cache because we failed alloc.
+         * Unacceptable for SET. Anywhere else too? */
+        if (comm == NREAD_SET) {
+            it = item_get(key, nkey);
+            if (it) {
+                item_unlink(it);
+                item_remove(it);
+            }
+        }
         return;
     }
     it->cas_id = req_cas_id;
@@ -2373,13 +2430,14 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
         return;
     }
 
-    out_string(c, add_delta(it, incr, delta, temp));
+    out_string(c, add_delta(c, it, incr, delta, temp));
     item_remove(it);         /* release our reference */
 }
 
 /*
  * adds a delta value to a numeric item.
  *
+ * c     connection requesting the operation
  * it    item to adjust
  * incr  true to increment value, false to decrement
  * delta amount to adjust value by
@@ -2387,7 +2445,7 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
  *
  * returns a response string to send back to the client.
  */
-char *do_add_delta(item *it, const bool incr, const int64_t delta, char *buf) {
+char *do_add_delta(conn *c, item *it, const bool incr, const int64_t delta, char *buf) {
     char *ptr;
     int64_t value;
     int res;
@@ -2401,10 +2459,12 @@ char *do_add_delta(item *it, const bool incr, const int64_t delta, char *buf) {
         return "CLIENT_ERROR cannot increment or decrement non-numeric value";
     }
 
-    if (incr)
+    if (incr) {
         value += delta;
-    else {
+        MEMCACHED_COMMAND_INCR(c->sfd, ITEM_key(it), value);
+    } else {
         value -= delta;
+        MEMCACHED_COMMAND_DECR(c->sfd, ITEM_key(it), value);
     }
     if(value < 0) {
         value = 0;
@@ -2465,6 +2525,7 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
 
     it = item_get(key, nkey);
     if (it) {
+        MEMCACHED_PROCESS_COMMAND_START(c->sfd, c->rcurr, c->rbytes);
         item_unlink(it);
         item_remove(it);      /* release our reference */
         out_string(c, "DELETED");
@@ -2493,6 +2554,8 @@ static void process_command(conn *c, char *command) {
     int comm;
 
     assert(c != NULL);
+
+    MEMCACHED_PROCESS_COMMAND_START(c->sfd, c->rcurr, c->rbytes);
 
     if (settings.verbose > 1)
         fprintf(stderr, "<%d %s\n", c->sfd, command);
