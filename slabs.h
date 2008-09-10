@@ -29,8 +29,8 @@ char *get_stats(const bool bin_prot, const char *stat_type,
                 int *buflen);
 
 /** Fill buffer with stats */ /*@null@*/
-char *do_slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf, 
-                     const char *key, const char *val, const uint16_t klen, 
+char *do_slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf,
+                     const char *key, const char *val, const uint16_t klen,
                      const uint32_t vlen), bool bin_prot);
 
 /* Request some slab be moved between classes

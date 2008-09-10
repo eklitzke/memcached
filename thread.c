@@ -518,8 +518,8 @@ char *item_cachedump(unsigned int slabs_clsid, unsigned int limit, unsigned int 
 /*
  * Dumps statistics about slab classes
  */
-char *item_stats(int *bytes, uint32_t (*add_stats)(char *buf, 
-                 const char *key, const char *val, const uint16_t klen, 
+char *item_stats(int *bytes, uint32_t (*add_stats)(char *buf,
+                 const char *key, const char *val, const uint16_t klen,
                  const uint32_t vlen), bool bin_prot) {
     char *ret;
 
@@ -566,8 +566,8 @@ void slabs_free(void *ptr, size_t size, unsigned int id) {
     pthread_mutex_unlock(&slabs_lock);
 }
 
-char *slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf, 
-                  const char *key, const char *val, const uint16_t klen, 
+char *slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf,
+                  const char *key, const char *val, const uint16_t klen,
                   const uint32_t vlen), bool bin_prot) {
     char *ret;
 

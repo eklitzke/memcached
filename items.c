@@ -331,8 +331,8 @@ char *do_item_cachedump(const unsigned int slabs_clsid, const unsigned int limit
     return buffer;
 }
 
-char *do_item_stats(int *bytes, uint32_t (*add_stats)(char *buf, 
-                    const char *key, const char *val, const uint16_t klen, 
+char *do_item_stats(int *bytes, uint32_t (*add_stats)(char *buf,
+                    const char *key, const char *val, const uint16_t klen,
                     const uint32_t vlen), bool bin_prot) {
 
     size_t bufleft = (size_t) LARGEST_ID * 160;
@@ -407,7 +407,7 @@ char *do_item_stats(int *bytes, uint32_t (*add_stats)(char *buf,
 
     /* append message terminator */
     if (bin_prot) {
-        bufcurr += append_bin_stats(bufcurr, NULL, NULL, 0, 0); 
+        bufcurr += append_bin_stats(bufcurr, NULL, NULL, 0, 0);
         *bytes = linelen + hdrsiz;
     } else {
         memcpy(bufcurr, "END\r\n", 6);

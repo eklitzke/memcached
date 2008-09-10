@@ -6,7 +6,7 @@
  * a multiplier factor from there, up to half the maximum slab size. The last
  * slab size is always 1MB, since that's the maximum item size allowed by the
  * memcached protocol.
- *
+*
  * $Id$
  */
 #include "memcached.h"
@@ -21,6 +21,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+
+#ifdef HAVE_MALLOC_H
+/* OpenBSD has a malloc.h, but warns to use stdlib.h instead */
+#ifndef __OpenBSD__
+#include <malloc.h>
+#endif
+#endif
 
 #define POWER_SMALLEST 1
 #define POWER_LARGEST  200
@@ -356,13 +363,13 @@ char *get_stats(const bool bin_prot, const char *stat_type,
         }
     } else if (strcmp(stat_type, "items") == 0) {
         buf = item_stats(&size, add_stats, bin_prot);
-        *buflen = size; 
+        *buflen = size;
         return buf;
     } else if (strcmp(stat_type, "slabs") == 0) {
         buf = slabs_stats(&size, add_stats, bin_prot);
         *buflen = size;
         return buf;
-    } 
+    }
 
 #ifdef HAVE_MALLOC_H
 #ifdef HAVE_STRUCT_MALLINFO
@@ -380,67 +387,67 @@ char *get_stats(const bool bin_prot, const char *stat_type,
             uint32_t nbytes = 0;
 
             sprintf(val, "%d", info.arena);
-            nbytes = add_stats(pos, "arena_size", val, strlen("arena_size"), 
+            nbytes = add_stats(pos, "arena_size", val, strlen("arena_size"),
                                strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.ordblks);
-            nbytes = add_stats(pos, "free_chunks", val, strlen("free_chunks"), 
+            nbytes = add_stats(pos, "free_chunks", val, strlen("free_chunks"),
                                strlen(val));
             linelen += nbytes;
             pos += nbytes;
-            
+
             sprintf(val, "%d", info.smblks);
-            nbytes = add_stats(pos, "fastbin_blocks", val, 
+            nbytes = add_stats(pos, "fastbin_blocks", val,
                                strlen("fastbin_blocks"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.hblks);
-            nbytes = add_stats(pos, "mmapped_regions", val, 
+            nbytes = add_stats(pos, "mmapped_regions", val,
                                strlen("mmapped_regions"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.hblkhd);
-            nbytes = add_stats(pos, "mmapped_space", val, 
+            nbytes = add_stats(pos, "mmapped_space", val,
                                strlen("mmapped_space"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.usmblks);
-            nbytes = add_stats(pos, "max_total_alloc", val, 
+            nbytes = add_stats(pos, "max_total_alloc", val,
                                strlen("max_total_alloc"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.fsmblks);
-            nbytes = add_stats(pos, "fastbin_space", val, 
+            nbytes = add_stats(pos, "fastbin_space", val,
                                strlen("fastbin_space"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.uordblks);
-            nbytes = add_stats(pos, "total_alloc", val, 
+            nbytes = add_stats(pos, "total_alloc", val,
                                strlen("total_alloc"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.fordblks);
-            nbytes = add_stats(pos, "total_free", val, 
+            nbytes = add_stats(pos, "total_free", val,
                                strlen("total_free"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
             sprintf(val, "%d", info.keepcost);
-            nbytes = add_stats(pos, "releasable_space", val, 
+            nbytes = add_stats(pos, "releasable_space", val,
                                strlen("releasable_space"), strlen(val));
             linelen += nbytes;
             pos += nbytes;
 
-            linelen += append_bin_stats(pos, NULL, NULL, 0, 0); 
-            *buflen = linelen; 
+            linelen += append_bin_stats(pos, NULL, NULL, 0, 0);
+            *buflen = linelen;
         } else {
             pos += sprintf(pos, "STAT arena_size %d\r\n", info.arena);
             pos += sprintf(pos, "STAT free_chunks %d\r\n", info.ordblks);
@@ -464,8 +471,8 @@ char *get_stats(const bool bin_prot, const char *stat_type,
 }
 
 /*@null@*/
-char *do_slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf, 
-                     const char *key, const char *val, const uint16_t klen, 
+char *do_slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf,
+                     const char *key, const char *val, const uint16_t klen,
                      const uint32_t vlen), bool bin_prot) {
     int i, total, linelen;
     char *buf = (char *)malloc(power_largest * 200 + 100);
@@ -531,19 +538,19 @@ char *do_slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf,
                 linelen += nbytes;
                 bufcurr += nbytes;
             } else {
-                bufcurr += sprintf(bufcurr, "STAT %d:chunk_size %u\r\n", i, 
+                bufcurr += sprintf(bufcurr, "STAT %d:chunk_size %u\r\n", i,
                                    p->size);
-                bufcurr += sprintf(bufcurr, "STAT %d:chunks_per_page %u\r\n", 
+                bufcurr += sprintf(bufcurr, "STAT %d:chunks_per_page %u\r\n",
                                    i, perslab);
-                bufcurr += sprintf(bufcurr, "STAT %d:total_pages %u\r\n", i, 
+                bufcurr += sprintf(bufcurr, "STAT %d:total_pages %u\r\n", i,
                                    slabs);
-                bufcurr += sprintf(bufcurr, "STAT %d:total_chunks %u\r\n", i, 
+                bufcurr += sprintf(bufcurr, "STAT %d:total_chunks %u\r\n", i,
                                    slabs*perslab);
-                bufcurr += sprintf(bufcurr, "STAT %d:used_chunks %u\r\n", i, 
+                bufcurr += sprintf(bufcurr, "STAT %d:used_chunks %u\r\n", i,
                                    slabs*perslab - p->sl_curr);
-                bufcurr += sprintf(bufcurr, "STAT %d:free_chunks %u\r\n", i, 
+                bufcurr += sprintf(bufcurr, "STAT %d:free_chunks %u\r\n", i,
                                    p->sl_curr);
-                bufcurr += sprintf(bufcurr, "STAT %d:free_chunks_end %u\r\n", 
+                bufcurr += sprintf(bufcurr, "STAT %d:free_chunks_end %u\r\n",
                                    i, p->end_page_free);
             }
             total++;
@@ -569,10 +576,10 @@ char *do_slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf,
         linelen += nbytes;
         bufcurr += nbytes;
 
-        bufcurr += append_bin_stats(bufcurr, NULL, NULL, 0, 0); 
+        bufcurr += append_bin_stats(bufcurr, NULL, NULL, 0, 0);
         *buflen = linelen + sizeof(header->response);
     } else {
-        bufcurr += sprintf(bufcurr, "STAT active_slabs %d\r\nSTAT total_malloced %llu\r\n", 
+        bufcurr += sprintf(bufcurr, "STAT active_slabs %d\r\nSTAT total_malloced %llu\r\n",
                            total, (unsigned long long)mem_malloced);
         bufcurr += sprintf(bufcurr, "END\r\n");
         *buflen = bufcurr - buf;

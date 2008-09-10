@@ -46,13 +46,6 @@ std *
 #include <assert.h>
 #include <limits.h>
 
-#ifdef HAVE_MALLOC_H
-/* OpenBSD has a malloc.h, but warns to use stdlib.h instead */
-#ifndef __OpenBSD__
-#include <malloc.h>
-#endif
-#endif
-
 /* FreeBSD 4.x doesn't have IOV_MAX exposed. */
 #ifndef IOV_MAX
 #if defined(__FreeBSD__) || defined(__APPLE__)
@@ -1276,7 +1269,7 @@ static void process_bin_stat(conn *c) {
         int len = 0;
         char *statbuf = get_stats(true, subcommand, &append_bin_stats, &len);
 
-        if (statbuf == NULL) 
+        if (statbuf == NULL)
             write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);
 
         write_and_free(c, statbuf, len);
@@ -2008,7 +2001,7 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
 #ifdef HAVE_STRUCT_MALLINFO
     if (strcmp(subcommand, "malloc") == 0) {
         int len = 0;
-        char *buf = get_stats(false, "malloc", &append_bin_stats, &len); 
+        char *buf = get_stats(false, "malloc", &append_bin_stats, &len);
         write_and_free(c, buf, len);
         return;
     }
