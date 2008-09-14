@@ -1286,7 +1286,7 @@ static void process_bin_stat(conn *c) {
             write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);
         else if (buf == NULL)
             write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);
-        else 
+        else
             write_and_free(c, buf, len);
     }
 }
