@@ -179,6 +179,7 @@ static void settings_init(void) {
     settings.num_threads = 4 + 1;     /* N workers + 1 dispatcher */
     settings.prefix_delimiter = ':';
     settings.detail_enabled = 0;
+    settings.reqs_per_event = 20;
 }
 
 /*
@@ -3066,6 +3067,7 @@ static void drive_machine(conn *c) {
     int sfd, flags = 1;
     socklen_t addrlen;
     struct sockaddr_storage addr;
+    int nreqs = settings.reqs_per_event;
     int res;
 
     assert(c != NULL);
@@ -3116,12 +3118,16 @@ static void drive_machine(conn *c) {
 
         case conn_read:
             res = IS_UDP(c->protocol) ? try_read_udp(c) : try_read_network(c);
+
             switch (res) {
             case 0 :
                 conn_set_state(c, conn_waiting);
                 break;
             case 1:
-                conn_set_state(c, conn_parse_cmd);
+             /* Only process nreqs at a time to avoid starving other
+                connections */
+                if (--nreqs)
+                    conn_set_state(c, conn_parse_cmd);
                 break;
             case -1:
                 conn_set_state(c, conn_closing);
@@ -3649,6 +3655,9 @@ static void usage(void) {
            );
 
     printf("-t <num>      number of threads to use, default 4\n");
+    printf("-R            Maximum number of requests per event\n"
+           "              limits the number of requests process for a given con nection\n"
+           "              to prevent starvation.  default 20\n");
     return;
 }
 
@@ -3825,7 +3834,7 @@ int main (int argc, char **argv) {
     setbuf(stderr, NULL);
 
     /* process arguments */
-    while ((c = getopt(argc, argv, "a:bp:s:U:m:Mc:khirvdl:u:P:f:s:n:t:D:L")) != -1) {
+    while ((c = getopt(argc, argv, "a:bp:s:U:m:Mc:khirvdl:u:P:f:s:n:t:D:LR:")) != -1) {
         switch (c) {
         case 'a':
             /* access for unix domain socket, as octal mask (like chmod)*/
@@ -3873,6 +3882,13 @@ int main (int argc, char **argv) {
             break;
         case 'r':
             maxcore = 1;
+            break;
+        case 'R':
+            settings.reqs_per_event = atoi(optarg);
+            if (settings.reqs_per_event == 0) {
+                fprintf(stderr, "Number of requests per event must be greater than 0\n");
+                return 1;
+            }
             break;
         case 'u':
             username = optarg;
