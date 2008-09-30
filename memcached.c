@@ -111,8 +111,6 @@ static struct event_base *main_base;
 #define TRANSMIT_SOFT_ERROR 2
 #define TRANSMIT_HARD_ERROR 3
 
-static int *buckets = 0; /* bucket->generation array for a managed instance */
-
 #define REALTIME_MAXDELTA 60*60*24*30
 /*
  * given time value that's either unix time or delta from current unix time, return
@@ -164,7 +162,7 @@ static void stats_reset(void) {
 static void settings_init(void) {
     settings.access = 0700;
     settings.port = 11211;
-    settings.udpport = 0;
+    settings.udpport = 11211;
     /* By default this string should be NULL for getaddrinfo() */
     settings.inter = NULL;
     settings.maxbytes = 64 * 1024 * 1024; /* default is 64MB */
@@ -173,7 +171,6 @@ static void settings_init(void) {
     settings.oldest_live = 0;
     settings.evict_to_free = 1;       /* push old items out of cache when memory runs out */
     settings.socketpath = NULL;       /* by default, not using a unix socket */
-    settings.managed = false;
     settings.factor = 1.25;
     settings.chunk_size = 48;         /* space for a modest key and value */
     settings.num_threads = 4 + 1;     /* N workers + 1 dispatcher */
@@ -392,8 +389,6 @@ conn *conn_new(const int sfd, enum conn_states init_state,
     c->write_and_go = init_state;
     c->write_and_free = 0;
     c->item = 0;
-    c->bucket = -1;
-    c->gen = 0;
 
     c->noreply = false;
 
@@ -2127,19 +2122,6 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
     int stats_get_misses = 0;
     assert(c != NULL);
 
-    if (settings.managed) {
-        int bucket = c->bucket;
-        if (bucket == -1) {
-            out_string(c, "CLIENT_ERROR no BG data in managed mode");
-            return;
-        }
-        c->bucket = -1;
-        if (buckets[bucket] != c->gen) {
-            out_string(c, "ERROR_NOT_OWNER");
-            return;
-        }
-    }
-
     do {
         while(key_token->length != 0) {
 
@@ -2339,19 +2321,6 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         stats_prefix_record_set(key, nkey);
     }
 
-    if (settings.managed) {
-        int bucket = c->bucket;
-        if (bucket == -1) {
-            out_string(c, "CLIENT_ERROR no BG data in managed mode");
-            return;
-        }
-        c->bucket = -1;
-        if (buckets[bucket] != c->gen) {
-            out_string(c, "ERROR_NOT_OWNER");
-            return;
-        }
-    }
-
     it = item_alloc(key, nkey, flags, realtime(exptime), vlen+2);
 
     if (it == 0) {
@@ -2401,19 +2370,6 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
 
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
-
-    if (settings.managed) {
-        int bucket = c->bucket;
-        if (bucket == -1) {
-            out_string(c, "CLIENT_ERROR no BG data in managed mode");
-            return;
-        }
-        c->bucket = -1;
-        if (buckets[bucket] != c->gen) {
-            out_string(c, "ERROR_NOT_OWNER");
-            return;
-        }
-    }
 
     delta = strtoll(tokens[2].value, NULL, 10);
 
@@ -2495,19 +2451,6 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
     assert(c != NULL);
 
     set_noreply_maybe(c, tokens, ntokens);
-
-    if (settings.managed) {
-        int bucket = c->bucket;
-        if (bucket == -1) {
-            out_string(c, "CLIENT_ERROR no BG data in managed mode");
-            return;
-        }
-        c->bucket = -1;
-        if (buckets[bucket] != c->gen) {
-            out_string(c, "ERROR_NOT_OWNER");
-            return;
-        }
-    }
 
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
@@ -2606,67 +2549,6 @@ static void process_command(conn *c, char *command) {
     } else if (ntokens >= 3 && ntokens <= 4 && (strcmp(tokens[COMMAND_TOKEN].value, "delete") == 0)) {
 
         process_delete_command(c, tokens, ntokens);
-
-    } else if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "own") == 0) {
-        unsigned int bucket, gen;
-        if (!settings.managed) {
-            out_string(c, "CLIENT_ERROR not a managed instance");
-            return;
-        }
-
-        if (sscanf(tokens[1].value, "%u:%u", &bucket,&gen) == 2) {
-            if ((bucket < 0) || (bucket >= MAX_BUCKETS)) {
-                out_string(c, "CLIENT_ERROR bucket number out of range");
-                return;
-            }
-            buckets[bucket] = gen;
-            out_string(c, "OWNED");
-            return;
-        } else {
-            out_string(c, "CLIENT_ERROR bad format");
-            return;
-        }
-
-    } else if (ntokens == 3 && (strcmp(tokens[COMMAND_TOKEN].value, "disown")) == 0) {
-
-        int bucket;
-        if (!settings.managed) {
-            out_string(c, "CLIENT_ERROR not a managed instance");
-            return;
-        }
-        if (sscanf(tokens[1].value, "%u", &bucket) == 1) {
-            if ((bucket < 0) || (bucket >= MAX_BUCKETS)) {
-                out_string(c, "CLIENT_ERROR bucket number out of range");
-                return;
-            }
-            buckets[bucket] = 0;
-            out_string(c, "DISOWNED");
-            return;
-        } else {
-            out_string(c, "CLIENT_ERROR bad format");
-            return;
-        }
-
-    } else if (ntokens == 3 && (strcmp(tokens[COMMAND_TOKEN].value, "bg")) == 0) {
-        int bucket, gen;
-        if (!settings.managed) {
-            out_string(c, "CLIENT_ERROR not a managed instance");
-            return;
-        }
-        if (sscanf(tokens[1].value, "%u:%u", &bucket, &gen) == 2) {
-            /* we never write anything back, even if input's wrong */
-            if ((bucket < 0) || (bucket >= MAX_BUCKETS) || (gen <= 0)) {
-                /* do nothing, bad input */
-            } else {
-                c->bucket = bucket;
-                c->gen = gen;
-            }
-            conn_set_state(c, conn_new_cmd);
-            return;
-        } else {
-            out_string(c, "CLIENT_ERROR bad format");
-            return;
-        }
 
     } else if (ntokens >= 2 && (strcmp(tokens[COMMAND_TOKEN].value, "stats") == 0)) {
 
@@ -3421,24 +3303,22 @@ static int server_socket(const int port, enum protocol prot) {
     hints.ai_flags = AI_PASSIVE|AI_ADDRCONFIG;
     if (IS_UDP(prot))
     {
-        hints.ai_protocol = IPPROTO_UDP;
         hints.ai_socktype = SOCK_DGRAM;
         hints.ai_family = AF_INET; /* This left here because of issues with OSX 10.5 */
     } else {
         hints.ai_family = AF_UNSPEC;
-        hints.ai_protocol = IPPROTO_TCP;
         hints.ai_socktype = SOCK_STREAM;
     }
 
     snprintf(port_buf, NI_MAXSERV, "%d", port);
     error= getaddrinfo(settings.inter, port_buf, &hints, &ai);
     if (error != 0) {
-      if (error != EAI_SYSTEM)
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(error));
-      else
-        perror("getaddrinfo()");
+        if (error != EAI_SYSTEM)
+          fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(error));
+        else
+          perror("getaddrinfo()");
 
-      return 1;
+        return 1;
     }
 
     for (next= ai; next; next= next->ai_next) {
@@ -3448,13 +3328,32 @@ static int server_socket(const int port, enum protocol prot) {
             return 1;
         }
 
+#ifdef IPV6_V6ONLY
+        if (next->ai_family == AF_INET6) {
+            error = setsockopt(sfd, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &flags, sizeof(flags));
+            if (error != 0) {
+                perror("setsockopt");
+                close(sfd);
+                continue;
+            }
+        }
+#endif
+
         setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&flags, sizeof(flags));
         if (IS_UDP(prot)) {
             maximize_sndbuf(sfd);
         } else {
-            setsockopt(sfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&flags, sizeof(flags));
-            setsockopt(sfd, SOL_SOCKET, SO_LINGER, (void *)&ling, sizeof(ling));
-            setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, (void *)&flags, sizeof(flags));
+            error = setsockopt(sfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&flags, sizeof(flags));
+            if (error != 0)
+                perror("setsockopt");
+
+            error = setsockopt(sfd, SOL_SOCKET, SO_LINGER, (void *)&ling, sizeof(ling));
+            if (error != 0)
+                perror("setsockopt");
+
+            error = setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, (void *)&flags, sizeof(flags));
+            if (error != 0)
+                perror("setsockopt");
         }
 
         if (bind(sfd, next->ai_addr, next->ai_addrlen) == -1) {
@@ -3467,33 +3366,33 @@ static int server_socket(const int port, enum protocol prot) {
             close(sfd);
             continue;
         } else {
-          success++;
-          if (!IS_UDP(prot) && listen(sfd, 1024) == -1) {
-              perror("listen()");
-              close(sfd);
-              freeaddrinfo(ai);
-              return 1;
-          }
-      }
-
-      if (IS_UDP(prot)) {
-        int c;
-
-        for (c = 1; c < settings.num_threads; c++) {
-            /* this is guaranteed to hit all threads because we round-robin */
-            dispatch_conn_new(sfd, conn_read, EV_READ | EV_PERSIST,
-                              UDP_READ_BUFFER_SIZE, ascii_udp_prot);
+            success++;
+            if (!IS_UDP(prot) && listen(sfd, 1024) == -1) {
+                perror("listen()");
+                close(sfd);
+                freeaddrinfo(ai);
+                return 1;
+            }
         }
-      } else {
-        if (!(listen_conn_add = conn_new(sfd, conn_listening,
-                                      EV_READ | EV_PERSIST, 1,
-                                      prot, main_base))) {
-            fprintf(stderr, "failed to create listening connection\n");
-            exit(EXIT_FAILURE);
+
+        if (IS_UDP(prot)) {
+            int c;
+
+            for (c = 1; c < settings.num_threads; c++) {
+                /* this is guaranteed to hit all threads because we round-robin */
+                dispatch_conn_new(sfd, conn_read, EV_READ | EV_PERSIST,
+                                  UDP_READ_BUFFER_SIZE, ascii_udp_prot);
+            }
+        } else {
+            if (!(listen_conn_add = conn_new(sfd, conn_listening,
+                                             EV_READ | EV_PERSIST, 1,
+                                             prot, main_base))) {
+                fprintf(stderr, "failed to create listening connection\n");
+                exit(EXIT_FAILURE);
+            }
+            listen_conn_add->next = listen_conn;
+            listen_conn = listen_conn_add;
         }
-        listen_conn_add->next = listen_conn;
-        listen_conn = listen_conn_add;
-      }
     }
 
     freeaddrinfo(ai);
@@ -3619,7 +3518,7 @@ static void clock_handler(const int fd, const short which, void *arg) {
 static void usage(void) {
     printf(PACKAGE " " VERSION "\n");
     printf("-p <num>      TCP port number to listen on (default: 11211)\n"
-           "-U <num>      UDP port number to listen on (default: 0, off)\n"
+           "-U <num>      UDP port number to listen on (default: 11211, 0 is off)\n"
            "-s <file>     unix socket path to listen on (disables network support)\n"
            "-a <mask>     access mask for unix socket, in octal (default 0700)\n"
            "-l <ip_addr>  interface to listen on, default is INDRR_ANY\n"
@@ -3640,7 +3539,6 @@ static void usage(void) {
            "-vvv          extremely verbose (also print internal state transitions)\n"
            "-h            print this help and exit\n"
            "-i            print memcached and libevent license\n"
-           "-b            run a managed instanced (mnemonic: buckets)\n"
            "-P <file>     save PID in <file>, only used with -d option\n"
            "-f <factor>   chunk size growth factor, default 1.25\n"
            "-n <bytes>    minimum space allocated for key+value+flags, default 48\n"
@@ -3834,7 +3732,7 @@ int main (int argc, char **argv) {
     setbuf(stderr, NULL);
 
     /* process arguments */
-    while ((c = getopt(argc, argv, "a:bp:s:U:m:Mc:khirvdl:u:P:f:s:n:t:D:LR:")) != -1) {
+    while ((c = getopt(argc, argv, "a:p:s:U:m:Mc:khirvdl:u:P:f:s:n:t:D:LR:")) != -1) {
         switch (c) {
         case 'a':
             /* access for unix domain socket, as octal mask (like chmod)*/
@@ -3843,9 +3741,6 @@ int main (int argc, char **argv) {
 
         case 'U':
             settings.udpport = atoi(optarg);
-            break;
-        case 'b':
-            settings.managed = true;
             break;
         case 'p':
             settings.port = atoi(optarg);
@@ -4036,16 +3931,6 @@ int main (int argc, char **argv) {
     suffix_init();
     slabs_init(settings.maxbytes, settings.factor, preallocate);
 
-    /* managed instance? alloc and zero a bucket array */
-    if (settings.managed) {
-        buckets = malloc(sizeof(int) * MAX_BUCKETS);
-        if (buckets == 0) {
-            fprintf(stderr, "failed to allocate the bucket array");
-            exit(EXIT_FAILURE);
-        }
-        memset(buckets, 0, sizeof(int) * MAX_BUCKETS);
-    }
-
     /*
      * ignore SIGPIPE signals; we can use errno == EPIPE if we
      * need that information
@@ -4068,8 +3953,12 @@ int main (int argc, char **argv) {
 
     /* create unix mode sockets after dropping privileges */
     if (settings.socketpath != NULL) {
+        errno = 0;
         if (server_socket_unix(settings.socketpath,settings.access)) {
-          fprintf(stderr, "failed to listen\n");
+          fprintf(stderr, "failed to listen on UNIX socket: %s\n",
+                  settings.socketpath);
+          if (errno != 0)
+              perror("socket listen");
           exit(EXIT_FAILURE);
         }
     }
@@ -4077,9 +3966,11 @@ int main (int argc, char **argv) {
     /* create the listening socket, bind it, and init */
     if (settings.socketpath == NULL) {
         int udp_port;
-
-        if (server_socket(settings.port, negotiating_prot)) {
-            fprintf(stderr, "failed to listen\n");
+        errno = 0;
+        if (settings.port && server_socket(settings.port, negotiating_prot)) {
+            fprintf(stderr, "failed to listen on TCP port %d\n", settings.port);
+            if (errno != 0)
+                perror("tcp listen");
             exit(EXIT_FAILURE);
         }
 
@@ -4092,8 +3983,11 @@ int main (int argc, char **argv) {
         udp_port = settings.udpport ? settings.udpport : settings.port;
 
         /* create the UDP listening socket and bind it */
-        if (server_socket(udp_port, ascii_udp_prot)) {
+        errno = 0;
+        if (settings.udpport && server_socket(settings.udpport, ascii_udp_prot)) {
             fprintf(stderr, "failed to listen on UDP port %d\n", settings.udpport);
+            if (errno != 0)
+                perror("udp listen");
             exit(EXIT_FAILURE);
         }
     }
