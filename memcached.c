@@ -1973,7 +1973,7 @@ uint32_t append_ascii_stats(char *buf, const char *key, const uint16_t klen,
         nbytes = sprintf(pos, "END\r\n");
     else if (vlen == 0)
         nbytes = sprintf(pos, "STAT %s\r\n", key);
-    else 
+    else
         nbytes = sprintf(pos, "STAT %s %s\r\n", key, val);
 
     return nbytes;
