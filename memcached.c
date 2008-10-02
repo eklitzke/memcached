@@ -1099,7 +1099,7 @@ static void complete_update_bin(conn *c) {
     *(ITEM_data(it) + it->nbytes - 1) = '\n';
 
     ret = store_item(it, c->item_comm, c);
-    
+
 #ifdef ENABLE_DTRACE
     switch (c->item_comm) {
     case NREAD_ADD:
@@ -1180,7 +1180,7 @@ static void process_bin_get(conn *c) {
         STATS_UNLOCK();
         MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nkey,
                               it->nbytes, it->cas_id);
-        
+
         if (c->cmd == PROTOCOL_BINARY_CMD_GETK ||
                 c->cmd == PROTOCOL_BINARY_CMD_GETKQ) {
             bodylen += nkey;
@@ -1207,7 +1207,7 @@ static void process_bin_get(conn *c) {
         stats.get_misses++;
         STATS_UNLOCK();
         MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);
- 
+
         if (c->cmd == PROTOCOL_BINARY_CMD_GETQ ||
                 c->cmd == PROTOCOL_BINARY_CMD_GETKQ) {
             conn_set_state(c, conn_new_cmd);
