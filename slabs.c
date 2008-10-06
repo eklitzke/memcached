@@ -309,20 +309,17 @@ void do_slabs_free(void *ptr, const size_t size, unsigned int id) {
     return;
 }
 
-char *get_stats(const bool bin_prot, const char *stat_type,
-                uint32_t (*add_stats)(char *buf, const char *key,
-                const uint16_t klen, const char *val, const uint32_t vlen),
-                int *buflen) {
+char *get_stats(const char *stat_type, uint32_t (*add_stats)(char *buf,
+                const char *key, const uint16_t klen, const char *val,
+                const uint32_t vlen), int *buflen) {
 
     char *buf, *pos;
     char val[128];
     int size = 0;
     *buflen = 0;
 
-    if (add_stats == NULL) {
-        free(buf);
+    if (add_stats == NULL)
         return NULL;
-    }
 
     if (!stat_type) {
         if ((buf = malloc(512)) == NULL) {
@@ -358,15 +355,15 @@ char *get_stats(const bool bin_prot, const char *stat_type,
 
         return buf;
     } else if (strcmp(stat_type, "items") == 0) {
-        buf = item_stats(&size, add_stats, bin_prot);
+        buf = item_stats(add_stats, &size);
         *buflen = size;
         return buf;
     } else if (strcmp(stat_type, "slabs") == 0) {
-        buf = slabs_stats(&size, add_stats, bin_prot);
+        buf = slabs_stats(add_stats, &size);
         *buflen = size;
         return buf;
     } else if (strcmp(stat_type, "sizes") == 0) {
-        buf = item_stats_sizes(&size, add_stats, bin_prot);
+        buf = item_stats_sizes(add_stats, &size);
         *buflen = size;
         return buf;
     }
@@ -461,9 +458,9 @@ char *get_stats(const bool bin_prot, const char *stat_type,
 }
 
 /*@null@*/
-char *do_slabs_stats(int *buflen, uint32_t (*add_stats)(char *buf,
-                     const char *key, const uint16_t klen, const char *val,
-                     const uint32_t vlen), bool bin_prot) {
+char *do_slabs_stats(uint32_t (*add_stats)(char *buf, const char *key,
+                     const uint16_t klen, const char *val,
+                     const uint32_t vlen), int *buflen) {
     int i, total, linelen;
     char *buf = (char *)malloc(power_largest * 200 + 100);
     char *bufcurr = buf;
