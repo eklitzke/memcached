@@ -1,6 +1,7 @@
 *.a
 *.o
 *.so
+.*.swp
 .deps
 Makefile
 Makefile.in
@@ -23,3 +24,4 @@ memcached
 memcached-debug
 missing
 stamp-h1
+tags

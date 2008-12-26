@@ -60,6 +60,11 @@
 #endif
 #endif
 
+#ifdef ALLOW_FOREIGN_KEYS
+#include <fk.h>
+#include <glib.h>
+#endif
+
 /*
  * forward declarations
  */
@@ -933,6 +938,7 @@ typedef struct token_s {
 #define KEY_TOKEN 1
 #define KEY_MAX_LENGTH 250
 
+
 #define MAX_TOKENS 8
 
 /*
@@ -1396,32 +1402,60 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
 static void process_update_command(conn *c, token_t *tokens, const size_t ntokens, int comm, bool handle_cas) {
     char *key;
     size_t nkey;
-    int flags;
+    int flags, next_token;
     time_t exptime;
     int vlen, old_vlen;
     uint64_t req_cas_id;
     item *it, *old_it;
+#ifdef ALLOW_FOREIGN_KEYS
+    GSLIST *xs = NULL;
+#endif
 
     assert(c != NULL);
 
     set_noreply_maybe(c, tokens, ntokens);
 
+    /* Check that the key wasn't too long */
     if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {
         out_string(c, "CLIENT_ERROR bad command line format");
         return;
     }
 
+    next_token = KEY_TOKEN + 1;
+
+#ifdef ALLOW_FOREIGN_KEYS
+    /* TODO: this stuff isn't correct if things further down break... */
+
+    /* Add all of the foreign keys to xs. */
+    while (strcmp(tokens[next_token].value, "__ENDKEYS")) {
+        xs = g_slist_prepend(xs, tokens[next_token].value);
+        next_token++;
+    }
+
+    /* Skip past the __ENDKEYS token */
+    next_token++;
+
+    /* Were there any foreign keys? If so we have to add in the dependency
+     * data. */
+    if (xs != NULL) {
+        fk_add_relation(tokens[KEY_TOKEN].value, xs);
+        g_slist_free(xs);
+    }
+#endif
+
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
 
-    flags = strtoul(tokens[2].value, NULL, 10);
-    exptime = strtol(tokens[3].value, NULL, 10);
-    vlen = strtol(tokens[4].value, NULL, 10);
+    flags = strtoul(tokens[next_token++].value, NULL, 10);
+    exptime = strtol(tokens[next_token++].value, NULL, 10);
+    vlen = strtol(tokens[next_token++].value, NULL, 10);
 
     // does cas value exist?
     if (handle_cas) {
-        req_cas_id = strtoull(tokens[5].value, NULL, 10);
+        req_cas_id = strtoull(tokens[next_token++].value, NULL, 10);
     }
+    
+    /* TODO: I think there can be more tokens? */
 
     if (errno == ERANGE || ((flags == 0 || exptime == 0) && errno == EINVAL)
         || vlen < 0) {
@@ -1675,7 +1709,7 @@ static void process_command(conn *c, char *command) {
 
         process_get_command(c, tokens, ntokens, false);
 
-    } else if ((ntokens == 6 || ntokens == 7) &&
+    } else if ((ntokens >= 6) &&
                ((strcmp(tokens[COMMAND_TOKEN].value, "add") == 0 && (comm = NREAD_ADD)) ||
                 (strcmp(tokens[COMMAND_TOKEN].value, "set") == 0 && (comm = NREAD_SET)) ||
                 (strcmp(tokens[COMMAND_TOKEN].value, "replace") == 0 && (comm = NREAD_REPLACE)) ||
