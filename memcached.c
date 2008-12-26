@@ -1425,6 +1425,12 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
 
 #ifdef ALLOW_FOREIGN_KEYS
     /* TODO: this stuff isn't correct if things further down break... */
+    /* TODO: detect missing __ENDKEYS */
+
+    /* First thing to do is to evict anything that depends on this key. This is
+     * done first because further down we're going to be allocating more
+     * memory, so if there is space to free up it's better to do it now. */
+    fk_delete(tokens[KEY_TOKEN.value]);
 
     /* Add all of the foreign keys to xs. */
     while (strcmp(tokens[next_token].value, "__ENDKEYS")) {
@@ -1586,6 +1592,21 @@ char *do_add_delta(conn *c, item *it, const bool incr, const int64_t delta, char
     return buf;
 }
 
+/* This callback is called whenever foreign keys are automatically deleted. It
+ * just deletes a key from the cache. */
+void fk_delete_callback(const char *key)
+{
+    /* TODO: there's more fancy stuff that needs to be done here like updating
+     * stats. We also want logging and some other stuff. */
+
+    it = item_get(key, strlen(key));
+    if (it) {
+        item_unlink(it);
+        item_remove(it);
+    }
+}
+
+/* TODO: fk stuff needs to be in here */
 static void process_delete_command(conn *c, token_t *tokens, const size_t ntokens) {
     char *key;
     size_t nkey;
@@ -3115,6 +3136,11 @@ int main (int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
     }
+
+#ifdef ALLOW_FOREIGN_KEYS
+    /* TODO: is this really the best place? */
+    fk_initialize((FKDestroyCallback) fk_delete_callback);
+#endif
 
     /* enter the event loop */
     event_base_loop(main_base, 0);
