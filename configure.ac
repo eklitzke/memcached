@@ -45,6 +45,13 @@ return sizeof(void*) == 8 ? 0 : 1;
     ])
 fi
 
+AC_ARG_ENABLE(fk,
+  [AS_HELP_STRING([--enable-fk],[enable foreign key support])])
+if test "x$enable_fk" == "xyes"
+then
+    CFLAGS="$CFLAGS -DALLOW_FOREIGN_KEYS"
+fi
+
 trylibeventdir=""
 AC_ARG_WITH(libevent,
        [  --with-libevent=PATH     Specify path to libevent installation ],
