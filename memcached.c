@@ -373,7 +373,7 @@ conn *conn_new(const int sfd, const int init_state, const int event_flags,
     event_base_set(base, &c->event);
     c->ev_flags = event_flags;
 
-    if (event_add(&c->event, 0) == -1) {
+    if (event_add(&c->event, NULL) == -1) {
         if (conn_add_to_freelist(c)) {
             conn_free(c);
         }
@@ -2317,6 +2317,10 @@ static void drive_machine(conn *c) {
     return;
 }
 
+/* When memcached creates a new socket to listen for connections on, this is
+ * the callback function that is passes to libevent. This callback is executed
+ * for the connection whenever there is data to read on the socket.
+ */
 void event_handler(const int fd, const short which, void *arg) {
     conn *c;
 
