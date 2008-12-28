@@ -24,6 +24,9 @@
 #include <sys/resource.h>
 #include <sys/uio.h>
 
+/* FIXME */
+#define ALLOW_FOREIGN_KEYS 1
+
 /* some POSIX systems need the following definition
  * to get mlockall flags out of sys/mman.h.  */
 #ifndef _P1003_1B_VISIBLE
@@ -1408,7 +1411,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     uint64_t req_cas_id;
     item *it, *old_it;
 #ifdef ALLOW_FOREIGN_KEYS
-    GSLIST *xs = NULL;
+    GSList *xs = NULL;
 #endif
 
     assert(c != NULL);
@@ -1430,7 +1433,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     /* First thing to do is to evict anything that depends on this key. This is
      * done first because further down we're going to be allocating more
      * memory, so if there is space to free up it's better to do it now. */
-    fk_delete(tokens[KEY_TOKEN.value]);
+    fk_delete(tokens[KEY_TOKEN].value);
 
     /* Add all of the foreign keys to xs. */
     while (strcmp(tokens[next_token].value, "__ENDKEYS")) {
@@ -1599,7 +1602,7 @@ void fk_delete_callback(const char *key)
     /* TODO: there's more fancy stuff that needs to be done here like updating
      * stats. We also want logging and some other stuff. */
 
-    it = item_get(key, strlen(key));
+    item *it = item_get(key, strlen(key));
     if (it) {
         item_unlink(it);
         item_remove(it);
