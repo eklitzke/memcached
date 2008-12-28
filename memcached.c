@@ -2597,6 +2597,12 @@ static void set_current_time(void) {
     current_time = (rel_time_t) (timer.tv_sec - stats.started);
 }
 
+/* The clock_handler is invoked once every second via libevent. Its purpose is
+ * to update the current_time.
+ *
+ * TODO: based on what I've learned about libevent, it looks like we can just
+ * use EV_PERSIST here and simplify this code somewhat (and possibly make it
+ * faster). */
 static void clock_handler(const int fd, const short which, void *arg) {
     struct timeval t = {.tv_sec = 1, .tv_usec = 0};
     static bool initialized = false;
