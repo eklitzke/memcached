@@ -1634,6 +1634,10 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
         }
     }
 
+#ifdef ALLOW_FOREIGN_KEYS
+    fk_delete(tokens[KEY_TOKEN].value);
+#endif
+
     if (settings.detail_enabled) {
         stats_prefix_record_delete(key);
     }
