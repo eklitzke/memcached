@@ -941,6 +941,31 @@ typedef struct token_s {
 
 #define MAX_TOKENS 8
 
+/* This takes a token out of the string s, and stuffs it into the `token'
+ * parameter. It returns a pointer to the string that starts where the next
+ * token should begin if there are more tokens to process, or NULL if there are
+ * no more tokens.
+ */
+static inline char * grab_token(char *s, token_t *token)
+{
+    char *n = strchrnul(s, ' ');
+    token->value = s;
+    token->length = n - s;
+    if (*n == '\0')
+        return NULL;
+    *n++ = '\0';
+    return n;
+}
+
+/* FIXME: need to add all of the update commands here. */
+static inline bool is_update_token(char *tok)
+{
+    if (!strcmp(tok, "set"))
+        return true;
+    else
+        return false;
+}
+
 /*
  * Tokenize the command string by replacing whitespace with '\0' and update
  * the token array tokens with pointer to start of each token and length.
@@ -958,42 +983,64 @@ typedef struct token_s {
  *      command  = tokens[ix].value;
  *   }
  */
-static size_t tokenize_command(char *command, token_t *tokens, const size_t max_tokens) {
+static size_t tokenize_command(char *command, token_t *tokens, size_t max_tokens) {
     char *s, *e;
     size_t ntokens = 0;
+#ifdef ALLOW_FOREIGN_KEYS
+    size_t extra_tokens = 0;
+#endif
 
     assert(command != NULL && tokens != NULL && max_tokens > 1);
 
-    for (s = e = command; ntokens < max_tokens - 1; ++e) {
-        if (*e == ' ') {
-            if (s != e) {
-                tokens[ntokens].value = s;
-                tokens[ntokens].length = e - s;
-                ntokens++;
-                *e = '\0';
-            }
-            s = e + 1;
-        }
-        else if (*e == '\0') {
-            if (s != e) {
-                tokens[ntokens].value = s;
-                tokens[ntokens].length = e - s;
-                ntokens++;
-            }
-
-            break; /* string end */
-        }
-    }
-
-    /*
-     * If we scanned the whole string, the terminal value pointer is null,
-     * otherwise it is the first unprocessed character.
+    /* Get out the first command token. We may need to know what type of
+     * command we're processing in order to properly tokenize the input.
      */
-    tokens[ntokens].value =  *e == '\0' ? NULL : e;
-    tokens[ntokens].length = 0;
+
+    s = grab_token(command, &tokens[0]);
     ntokens++;
 
+#ifdef ALLOW_FOREIGN_KEYS
+    if (is_update_token(tokens[0].value)) {
+        /* We have to scan until we finish reading the keys (i.e. until we pass "__ENDKEYS"). */
+        while (s) {
+            s = grab_token(s, &tokens[ntokens]);
+
+            /* If s is NULL then we hit the end of the command, and the input
+             * is invalid */
+            if (!s)
+                goto fail;
+
+            /* If the current token is __ENDKEYS, we can break out of the loop.
+             **/
+            if (!strcmp(tokens[ntokens].value, "__ENDKEYS")) {
+                ntokens++;
+                break;
+            }
+            extra_tokens++;
+            ntokens++;
+        }
+        max_tokens += extra_tokens;
+    }
+#endif
+
+    /* So now we've processed the key tokens of the command if it was an update
+     * command. If not, there was nothing special to do. Either way, the rest
+     * of the command should be like a fixed length command, and can be
+     * tokenized normally.
+     */
+
+    for ( ; s && (ntokens < max_tokens - 1); ntokens++)
+        s = grab_token(s, &tokens[ntokens]);
+
+    tokens[ntokens].value = s;
+    tokens[ntokens].length = 0;
+    ntokens++;
     return ntokens;
+
+fail:
+	/* FIXME: don't fail like this! */
+	fprintf(stderr, "failed to tokenize input -- missing __ENDKEYS?\n");
+    exit(EXIT_FAILURE);
 }
 
 /* set up a connection to write a buffer then free it, used for stats */
@@ -1408,6 +1455,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     uint64_t req_cas_id;
     item *it, *old_it;
 #ifdef ALLOW_FOREIGN_KEYS
+    int max_key_token;
     GSList *xs = NULL;
 #endif
 
@@ -1424,6 +1472,11 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     next_token = KEY_TOKEN + 1;
 
 #ifdef ALLOW_FOREIGN_KEYS
+
+    /* We can't overshoot this index, or it means there aren't enough fields
+     * following the __ENDKEYS token */
+    max_key_token = ntokens - KEY_TOKEN - 4;
+
     /* TODO: this stuff isn't correct if things further down break... */
     /* TODO: detect missing __ENDKEYS */
 
@@ -1435,7 +1488,13 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     /* Add all of the foreign keys to xs. */
     while (strcmp(tokens[next_token].value, "__ENDKEYS")) {
         xs = g_slist_prepend(xs, tokens[next_token].value);
-        next_token++;
+
+        /* Increment next_token and check to make sure that we haven't overshot
+         * the end of the client command. */
+        if (next_token++ == max_key_token) {
+            out_string(c, "CLIENT_ERROR bad command line format (missing __ENDKEYS?)");
+            return;
+        }
     }
 
     /* Skip past the __ENDKEYS token */
@@ -1596,7 +1655,7 @@ char *do_add_delta(conn *c, item *it, const bool incr, const int64_t delta, char
  * just deletes a key from the cache. */
 void fk_delete_callback(const char *key)
 {
-    /* TODO: there's more fancy stuff that needs to be done here like updating
+    /* TODO: there's more fancy stuff that ought to be done here like updating
      * stats. We also want logging and some other stuff. */
 
     item *it = item_get(key, strlen(key));
@@ -1606,7 +1665,6 @@ void fk_delete_callback(const char *key)
     }
 }
 
-/* TODO: fk stuff needs to be in here */
 static void process_delete_command(conn *c, token_t *tokens, const size_t ntokens) {
     char *key;
     size_t nkey;
@@ -1634,13 +1692,20 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
         }
     }
 
-#ifdef ALLOW_FOREIGN_KEYS
-    fk_delete(tokens[KEY_TOKEN].value);
-#endif
-
     if (settings.detail_enabled) {
         stats_prefix_record_delete(key);
     }
+
+#ifdef ALLOW_FOREIGN_KEYS
+    /* We need to "delete" the key in libfk no matter what, i.e. regardless of
+     * whether or not the item is actually in the cache. We should also delete
+     * the item even if the delete is deferred.
+     *
+     * TODO: In the future, we might want to add defer functionality to libfk,
+     * but that's a fairly small optimization and not important for now.
+     */
+    fk_delete(tokens[KEY_TOKEN].value);
+#endif
 
     it = item_get(key, nkey);
     if (it) {
