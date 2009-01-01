@@ -939,7 +939,7 @@ typedef struct token_s {
 #define KEY_MAX_LENGTH 250
 
 
-#define MAX_TOKENS 8
+#define MAX_TOKENS 30
 
 /* This takes a token out of the string s, and stuffs it into the `token'
  * parameter. It returns a pointer to the string that starts where the next
@@ -965,6 +965,9 @@ static inline bool is_update_token(char *tok)
     else
         return false;
 }
+
+/* These are error codes that can be returned by tokenize_command. */
+#define TOKENIZE_ERR_PROBABLY_MISSING_ENDKEYS      -1
 
 /*
  * Tokenize the command string by replacing whitespace with '\0' and update
@@ -1008,7 +1011,7 @@ static size_t tokenize_command(char *command, token_t *tokens, size_t max_tokens
             /* If s is NULL then we hit the end of the command, and the input
              * is invalid */
             if (!s)
-                goto fail;
+                return TOKENIZE_ERR_PROBABLY_MISSING_ENDKEYS;
 
             /* If the current token is __ENDKEYS, we can break out of the loop.
              **/
@@ -1036,11 +1039,6 @@ static size_t tokenize_command(char *command, token_t *tokens, size_t max_tokens
     tokens[ntokens].length = 0;
     ntokens++;
     return ntokens;
-
-fail:
-	/* FIXME: don't fail like this! */
-	fprintf(stderr, "failed to tokenize input -- missing __ENDKEYS?\n");
-    exit(EXIT_FAILURE);
 }
 
 /* set up a connection to write a buffer then free it, used for stats */
@@ -1455,7 +1453,6 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     uint64_t req_cas_id;
     item *it, *old_it;
 #ifdef ALLOW_FOREIGN_KEYS
-    int max_key_token;
     GSList *xs = NULL;
 #endif
 
@@ -1473,29 +1470,19 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
 
 #ifdef ALLOW_FOREIGN_KEYS
 
-    /* We can't overshoot this index, or it means there aren't enough fields
-     * following the __ENDKEYS token */
-    max_key_token = ntokens - KEY_TOKEN - 4;
-
     /* TODO: this stuff isn't correct if things further down break... */
-    /* TODO: detect missing __ENDKEYS */
 
     /* First thing to do is to evict anything that depends on this key. This is
      * done first because further down we're going to be allocating more
      * memory, so if there is space to free up it's better to do it now. */
     fk_delete(tokens[KEY_TOKEN].value);
 
-    /* Add all of the foreign keys to xs. */
-    while (strcmp(tokens[next_token].value, "__ENDKEYS")) {
-        xs = g_slist_prepend(xs, tokens[next_token].value);
-
-        /* Increment next_token and check to make sure that we haven't overshot
-         * the end of the client command. */
-        if (next_token++ == max_key_token) {
-            out_string(c, "CLIENT_ERROR bad command line format (missing __ENDKEYS?)");
-            return;
-        }
-    }
+    /* Add all of the foreign keys to xs. This loop is guaranteed to terminate
+     * since tokenize_command will have signalled an error if the __ENDKEYS
+     * token was missing.
+     **/
+    while (strcmp(tokens[next_token].value, "__ENDKEYS"))
+        xs = g_slist_prepend(xs, tokens[next_token++].value);
 
     /* Skip past the __ENDKEYS token */
     next_token++;
@@ -1766,6 +1753,32 @@ static void process_verbosity_command(conn *c, token_t *tokens, const size_t nto
     return;
 }
 
+/* Process a command string. This is the core function that parses a command
+ * string and dispatches a more specialized function to deal with the request.
+ *
+ * Here's a whirlwind tour of how this works:
+ * 1) The command is tokenized by tokenize_command. This function will build up
+ *    an array of token_t structs. It also mutates the command string (namely,
+ *    it  overwrites the spaces with '\0' bytes).
+ * 2) There are a bunch of elif statements that look at the number of tokens
+ *     and the command token to figure out how to dispatch the request. This
+ *     code could probably be cleaned up quite a bit. The main things to focus
+ *     on would be:
+ *   - There are a lot of strcmp operations to check the command token against
+ *     each possible command. This is verbose/ugly and kind of expensive. The
+ *     right way to fix this is probably to use something like gperf to hash
+ *     the string once and then you can have a switch statement on the string
+ *     hash (but gperf is GPL so that particularly library might not be
+ *     usable).
+ *   - Some of the commands have their own special processing functions, and
+ *     some just have their processing code inline here. That makes this
+ *     function rather large.
+ *   - The parsing/validation logic is largely split up between
+ *     process_command and the individual functions that dispatch commands
+ *     (and, to a lesser degree, in the tokenizer). It would be nice to have
+ *     it in just one place (probably it should be the duty of process_command
+ *     to know whether or not an input is valid).
+ **/
 static void process_command(conn *c, char *command) {
 
     token_t tokens[MAX_TOKENS];
@@ -1793,6 +1806,21 @@ static void process_command(conn *c, char *command) {
     }
 
     ntokens = tokenize_command(command, tokens, MAX_TOKENS);
+
+    /* Check ntokens for tokenize errors. */
+    switch (ntokens) {
+        case TOKENIZE_ERR_PROBABLY_MISSING_ENDKEYS:
+            out_string(c, "CLIENT_ERROR bad command line format -- missing __ENDKEYS?");
+            return;
+#if 0
+        default:
+            if (settings.verbose > 1)
+                fprintf(stderr,
+                        "<%d successfully tokenized command, command = \"%s\", ntokens = %d\n",
+                        c->sfd, tokens[COMMAND_TOKEN].value, ntokens);
+#endif
+    }
+
     if (ntokens >= 3 &&
         ((strcmp(tokens[COMMAND_TOKEN].value, "get") == 0) ||
          (strcmp(tokens[COMMAND_TOKEN].value, "bget") == 0))) {
